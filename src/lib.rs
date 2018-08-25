@@ -14,7 +14,7 @@ where
     data: UnsafeCell<[T; 4]>,
     read: AtomicUsize,
     write: AtomicUsize,
-    written: AtomicUsize,
+    available: AtomicUsize,
 }
 
 impl<T> FixedQueue4<T>
@@ -29,7 +29,7 @@ where
             data: UnsafeCell::new([default; 4]),
             read: ATOMIC_USIZE_INIT,
             write: ATOMIC_USIZE_INIT,
-            written: ATOMIC_USIZE_INIT,
+            available: ATOMIC_USIZE_INIT,
         }
     }
 
@@ -44,9 +44,9 @@ where
     }
 
     pub fn is_empty(&self) -> bool {
-        let written_counter = self.written.load(Ordering::SeqCst);
+        let available_counter = self.available.load(Ordering::SeqCst);
         let read_counter = self.read.load(Ordering::SeqCst);
-        written_counter == read_counter
+        available_counter == read_counter
     }
 
     /// Add an item to the queue. An error is returned if the queue is full.
@@ -76,16 +76,16 @@ where
         let p = unsafe { &mut *self.data.get() };
         p[idx] = value;
 
-        // Now update `self.written` so that readers can read what we just wrote.
+        // Now update `self.available` so that readers can read what we just wrote.
         loop {
-            let written_counter = self.written.load(Ordering::SeqCst);
-            if self.written.compare_and_swap(
-                written_counter,
-                written_counter.wrapping_add(1),
+            let available_counter = self.available.load(Ordering::SeqCst);
+            if self.available.compare_and_swap(
+                available_counter,
+                available_counter.wrapping_add(1),
                 Ordering::SeqCst,
-            ) == written_counter
+            ) == available_counter
             {
-                // We've managed increment `self.written` successfully without
+                // We've managed increment `self.available` successfully without
                 // anyone else updating it underneath us.
                 break;
             }
@@ -94,33 +94,33 @@ where
         Ok(())
     }
 
-    /// Look at the next item in the queue, but do not remove it.
-    pub fn peek(&self) -> Option<T> {
-        let wp = self.write.load(Ordering::SeqCst);
-        let rp = self.read.load(Ordering::SeqCst);
-        if wp > rp {
-            // We have data
-            let read_idx = rp % Self::QUEUE_LEN;
-            let p = unsafe { &*self.data.get() };
-            Some(p[read_idx])
-        } else {
-            None
-        }
-    }
-
     /// Take the next item off the queue.
     pub fn pop(&self) -> Option<T> {
-        let wp = self.write.load(Ordering::SeqCst);
-        let rp = self.read.load(Ordering::SeqCst);
-        if wp > rp {
-            // We have data
-            let read_idx = rp % Self::QUEUE_LEN;
+        // Loop until we've read an item without colliding with another
+        // reader.
+        loop {
+            let available_counter = self.available.load(Ordering::SeqCst);
+            let read_counter = self.read.load(Ordering::SeqCst);
+            if available_counter == read_counter {
+                // Queue is empty - quit now
+                return None;
+            }
+            // This is safe because no-one can be writing to this slot right
+            // now, and multiple-readers is OK.
             let p = unsafe { &*self.data.get() };
-            let result = Some(p[read_idx]);
-            self.read.fetch_add(1, Ordering::SeqCst);
-            result
-        } else {
-            None
+            // Cache the result
+            let result = p[self.counter_to_idx(read_counter)];
+            if self.read.compare_and_swap(
+                read_counter,
+                read_counter.wrapping_add(1),
+                Ordering::SeqCst,
+            ) == read_counter
+            {
+                // We've managed increment `self.read` successfully without
+                // anyone else updating it underneath us. We can now return
+                // the result and leave the loop.
+                return Some(result);
+            }
         }
     }
 }
@@ -138,7 +138,6 @@ mod test {
         assert!(!q.is_full());
         assert!(q.push(3).is_ok());
         assert!(!q.is_full());
-        assert_eq!(q.peek(), Some(1));
         assert_eq!(q.pop(), Some(1));
         assert_eq!(q.pop(), Some(2));
         assert_eq!(q.pop(), Some(3));
