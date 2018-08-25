@@ -1,48 +1,55 @@
 #![no_std]
 
+#[macro_use]
+extern crate const_ft;
+
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicUsize, Ordering, ATOMIC_USIZE_INIT};
 
-/// A queue of fixed length 4. Holds any type `T`. Safe to `push()` from one
-/// ISR and `pop()` from the main thread.
-///
-/// It is unsafe to `push()` from multiple ISRs that can pre-empt each other.
-pub struct FixedQueue4<T>
+/// A queue of fixed length based around a mutable slice provided to the
+/// constructor. Holds a number of some type `T`. Safe for multiple consumers
+/// and producers.
+pub struct AtomicQueue<'a, T>
 where
-    T: Copy,
+    T: 'a + Copy,
 {
-    data: UnsafeCell<[T; 4]>,
+    data: UnsafeCell<&'a mut [T]>,
     read: AtomicUsize,
     write: AtomicUsize,
     available: AtomicUsize,
+    length: usize,
 }
 
-impl<T> FixedQueue4<T>
+/// Our use of CAS atomics means we can share `AtomicQueue` between threads
+/// safely.
+unsafe impl<'a, T> Sync for AtomicQueue<'a, T> where T: Send + Copy {}
+
+impl<'a, T> AtomicQueue<'a, T>
 where
     T: Copy,
 {
-    const QUEUE_LEN: usize = 4;
-
-    /// Create a new fixed-length queue.
-    pub fn new(default: T) -> FixedQueue4<T> {
-        FixedQueue4 {
-            data: UnsafeCell::new([default; 4]),
-            read: ATOMIC_USIZE_INIT,
-            write: ATOMIC_USIZE_INIT,
-            available: ATOMIC_USIZE_INIT,
+    /// Create a new queue.
+    const_ft! {
+        pub fn new(buffer: &'a mut[T]) -> AtomicQueue<'a, T> {
+            let length = buffer.len();
+            AtomicQueue {
+                data: UnsafeCell::new(buffer),
+                read: ATOMIC_USIZE_INIT,
+                write: ATOMIC_USIZE_INIT,
+                available: ATOMIC_USIZE_INIT,
+                length,
+            }
         }
     }
 
-    fn counter_to_idx(&self, counter: usize) -> usize {
-        counter % Self::QUEUE_LEN
-    }
-
+    /// Check if the queue is full.
     pub fn is_full(&self) -> bool {
         let write_counter = self.write.load(Ordering::SeqCst);
         let read_counter = self.read.load(Ordering::SeqCst);
-        (write_counter.wrapping_sub(read_counter)) >= Self::QUEUE_LEN
+        (write_counter.wrapping_sub(read_counter)) >= self.length
     }
 
+    /// Check if the queue is empty.
     pub fn is_empty(&self) -> bool {
         let available_counter = self.available.load(Ordering::SeqCst);
         let read_counter = self.read.load(Ordering::SeqCst);
@@ -56,7 +63,7 @@ where
         let idx = loop {
             let write_counter = self.write.load(Ordering::SeqCst);
             let read_counter = self.read.load(Ordering::SeqCst);
-            if (write_counter.wrapping_sub(read_counter)) >= Self::QUEUE_LEN {
+            if (write_counter.wrapping_sub(read_counter)) >= self.length {
                 // Queue is full - quit now
                 return Err(());
             }
@@ -123,6 +130,10 @@ where
             }
         }
     }
+
+    fn counter_to_idx(&self, counter: usize) -> usize {
+        counter % self.length
+    }
 }
 
 #[cfg(test)]
@@ -131,7 +142,8 @@ mod test {
 
     #[test]
     fn create_queue() {
-        let q = FixedQueue4::new(0u32);
+        let mut buffer = [0u32; 4];
+        let q = AtomicQueue::new(&mut buffer);
         assert!(q.push(1).is_ok());
         assert!(!q.is_full());
         assert!(q.push(2).is_ok());
@@ -153,7 +165,8 @@ mod test {
 
     #[test]
     fn overflow_queue() {
-        let q = FixedQueue4::new(0u32);
+        let mut buffer = [0u32; 4];
+        let q = AtomicQueue::new(&mut buffer);
         assert!(q.push(1).is_ok());
         assert!(!q.is_full());
         assert!(q.push(2).is_ok());

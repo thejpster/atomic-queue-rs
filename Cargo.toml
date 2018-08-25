@@ -1,6 +1,13 @@
 [package]
-name = "fixed_queue"
+name = "atomic_queue"
 version = "0.1.0"
 authors = ["Jonathan 'theJPster' Pallant <github@thejpster.org.uk>"]
 
 [dependencies]
+const-ft = { version =  "0.1" }
+
+[features]
+const = ["const-ft/const_fn"]
+
+[dev-dependencies]
+lazy_static = "1.1.0"
