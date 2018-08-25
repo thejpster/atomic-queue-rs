@@ -134,12 +134,13 @@ where
         // Loop until we've read an item without colliding with another
         // reader.
         loop {
-            let read_counter = self.read.load(Ordering::Relaxed);
+            let read_counter = self.read.load(Ordering::Acquire);
             let available_counter = self.available.load(Ordering::Acquire);
             if available_counter == read_counter {
                 // Queue is empty - quit now
                 return None;
             }
+
             // This is safe because no-one can be writing to this slot right
             // now, and multiple-readers is OK.
             let p = unsafe { &*self.data.get() };
@@ -148,7 +149,7 @@ where
 
             let write_counter = self.write.load(Ordering::Relaxed);
             if write_counter != available_counter {
-                // Queue is inconsistent - try again
+                // Queue is currently being written to - try again
                 continue;
             }
 
@@ -227,7 +228,7 @@ mod test {
     #[test]
     fn threaded_test() {
         use std::thread;
-        const COUNT: u64 = 1_000_000;
+        const COUNT: u64 = 10_000_000;
         static mut STORAGE: [u64; 256] = [0u64; 256];
         lazy_static! {
             static ref QUEUE: AtomicQueue<'static, u64> = {
