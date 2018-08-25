@@ -43,11 +43,22 @@ pub struct AtomicQueue<'a, T>
 where
     T: 'a + Copy,
 {
+    /// This is where we store our data
     data: UnsafeCell<&'a mut [T]>,
+    /// This is the counter for the first item in the queue (i.e. the one to
+    /// be pop'd next). Counters increment forever. You convert it to an
+    /// array index by taking them modulo data.len() (see `counter_to_idx`).
     read: AtomicUsize,
+    /// This is the counter for the last item in the queue (i.e. the most
+    /// recent one pushed), whether or not the write is complete. Counters
+    /// increment forever. You convert it to an array index by taking them
+    /// modulo data.len() (see `counter_to_idx`).
     write: AtomicUsize,
+    /// This is the counter for the last item in the queue (i.e. the most
+    /// recent one pushed) where the write is actually complete. Counters
+    /// increment forever. You convert it to an array index by taking them
+    /// modulo data.len() (see `counter_to_idx`).
     available: AtomicUsize,
-    length: usize,
 }
 
 /// Our use of CAS atomics means we can share `AtomicQueue` between threads
@@ -61,22 +72,24 @@ where
     /// Create a new queue.
     const_ft! {
         pub fn new(buffer: &'a mut[T]) -> AtomicQueue<'a, T> {
-            let length = buffer.len();
             AtomicQueue {
                 data: UnsafeCell::new(buffer),
                 read: ATOMIC_USIZE_INIT,
                 write: ATOMIC_USIZE_INIT,
                 available: ATOMIC_USIZE_INIT,
-                length,
             }
         }
+    }
+
+    pub fn length(&self) -> usize {
+        unsafe { (*self.data.get()).len() }
     }
 
     /// Check if the queue is full.
     pub fn is_full(&self) -> bool {
         let write_counter = self.write.load(Ordering::SeqCst);
         let read_counter = self.read.load(Ordering::SeqCst);
-        (write_counter.wrapping_sub(read_counter)) >= self.length
+        (write_counter.wrapping_sub(read_counter)) >= self.length()
     }
 
     /// Check if the queue is empty.
@@ -93,7 +106,7 @@ where
         let idx = loop {
             let write_counter = self.write.load(Ordering::SeqCst);
             let read_counter = self.read.load(Ordering::SeqCst);
-            if (write_counter.wrapping_sub(read_counter)) >= self.length {
+            if (write_counter.wrapping_sub(read_counter)) >= self.length() {
                 // Queue is full - quit now
                 return Err(());
             }
@@ -162,7 +175,7 @@ where
     }
 
     fn counter_to_idx(&self, counter: usize) -> usize {
-        counter % self.length
+        counter % self.length()
     }
 }
 
