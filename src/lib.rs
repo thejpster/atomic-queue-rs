@@ -141,8 +141,8 @@ where
                 return None;
             }
 
-            // This is safe because no-one can be writing to this slot right
-            // now, and multiple-readers is OK.
+            // This is safe because if someone is writing to this exact
+            // location, we'll detect that next and retry.
             let p = unsafe { &*self.data.get() };
             // Cache the result
             let result = p[self.counter_to_idx(read_counter)];
