@@ -2,6 +2,11 @@
 name = "atomic_queue"
 version = "0.1.0"
 authors = ["Jonathan 'theJPster' Pallant <github@thejpster.org.uk>"]
+description = "A simple #![no_std] atomic queue."
+keywords = ["arm", "cortex-m", "atomic", "queue", "ringbuffer"]
+categories = ["embedded", "no-std"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/thejpster/atomic-queue-rs"
 
 [dependencies]
 const-ft = { version =  "0.1" }
