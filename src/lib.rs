@@ -85,20 +85,6 @@ where
         unsafe { (*self.data.get()).len() }
     }
 
-    /// Check if the queue is full.
-    pub fn is_full(&self) -> bool {
-        let write_counter = self.write.load(Ordering::SeqCst);
-        let read_counter = self.read.load(Ordering::SeqCst);
-        (write_counter.wrapping_sub(read_counter)) >= self.length()
-    }
-
-    /// Check if the queue is empty.
-    pub fn is_empty(&self) -> bool {
-        let available_counter = self.available.load(Ordering::SeqCst);
-        let read_counter = self.read.load(Ordering::SeqCst);
-        available_counter == read_counter
-    }
-
     /// Add an item to the queue. An error is returned if the queue is full.
     pub fn push(&self, value: T) -> Result<(), ()> {
         // Loop until we've allocated ourselves some space without colliding
@@ -110,11 +96,15 @@ where
                 // Queue is full - quit now
                 return Err(());
             }
-            if self.write.compare_and_swap(
-                write_counter,
-                write_counter.wrapping_add(1),
-                Ordering::SeqCst,
-            ) == write_counter
+            if self
+                .write
+                .compare_exchange(
+                    write_counter,
+                    write_counter.wrapping_add(1),
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                )
+                .is_ok()
             {
                 // We've managed increment `self.write` successfully without
                 // anyone else updating it underneath us.
@@ -127,19 +117,7 @@ where
         p[idx] = value;
 
         // Now update `self.available` so that readers can read what we just wrote.
-        loop {
-            let available_counter = self.available.load(Ordering::SeqCst);
-            if self.available.compare_and_swap(
-                available_counter,
-                available_counter.wrapping_add(1),
-                Ordering::SeqCst,
-            ) == available_counter
-            {
-                // We've managed increment `self.available` successfully without
-                // anyone else updating it underneath us.
-                break;
-            }
-        }
+        self.available.fetch_add(1, Ordering::SeqCst);
 
         Ok(())
     }
@@ -160,11 +138,15 @@ where
             let p = unsafe { &*self.data.get() };
             // Cache the result
             let result = p[self.counter_to_idx(read_counter)];
-            if self.read.compare_and_swap(
-                read_counter,
-                read_counter.wrapping_add(1),
-                Ordering::SeqCst,
-            ) == read_counter
+            if self
+                .read
+                .compare_exchange(
+                    read_counter,
+                    read_counter.wrapping_add(1),
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                )
+                .is_ok()
             {
                 // We've managed increment `self.read` successfully without
                 // anyone else updating it underneath us. We can now return
@@ -188,22 +170,15 @@ mod test {
         let mut buffer = [0u32; 4];
         let q = AtomicQueue::new(&mut buffer);
         assert!(q.push(1).is_ok());
-        assert!(!q.is_full());
         assert!(q.push(2).is_ok());
-        assert!(!q.is_full());
         assert!(q.push(3).is_ok());
-        assert!(!q.is_full());
         assert_eq!(q.pop(), Some(1));
         assert_eq!(q.pop(), Some(2));
         assert_eq!(q.pop(), Some(3));
         assert_eq!(q.pop(), None);
-        assert!(q.is_empty());
         assert!(q.push(4).is_ok());
-        assert!(!q.is_empty());
         assert_eq!(q.pop(), Some(4));
-        assert!(q.is_empty());
         assert_eq!(q.pop(), None);
-        assert!(q.is_empty());
     }
 
     #[test]
@@ -211,15 +186,10 @@ mod test {
         let mut buffer = [0u32; 4];
         let q = AtomicQueue::new(&mut buffer);
         assert!(q.push(1).is_ok());
-        assert!(!q.is_full());
         assert!(q.push(2).is_ok());
-        assert!(!q.is_full());
         assert!(q.push(3).is_ok());
-        assert!(!q.is_full());
         assert!(q.push(4).is_ok());
-        assert!(q.is_full());
         assert!(q.push(5).is_err());
-        assert!(q.is_full());
         assert_eq!(q.pop(), Some(1));
         assert_eq!(q.pop(), Some(2));
         assert_eq!(q.pop(), Some(3));
