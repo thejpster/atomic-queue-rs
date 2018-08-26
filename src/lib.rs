@@ -158,7 +158,6 @@ where
                 // than ours, and we need to try again.
             }
         }
-
     }
 
     /// Take the next item off the queue. `None` is returned if the queue is
@@ -253,11 +252,14 @@ mod test {
         #[derive(Copy, Clone)]
         struct TestItem {
             data: [u8; 64],
-            value: u64
+            value: u64,
         }
 
         const COUNT: u64 = 10_000_000;
-        static mut STORAGE: [TestItem; 256] = [TestItem { data: [0u8; 64], value: 0 }; 256];
+        static mut STORAGE: [TestItem; 256] = [TestItem {
+            data: [0u8; 64],
+            value: 0,
+        }; 256];
         lazy_static! {
             static ref QUEUE: AtomicQueue<'static, TestItem> = {
                 let m = unsafe { AtomicQueue::new(&mut STORAGE) };
@@ -270,7 +272,10 @@ mod test {
         thread::spawn(|| {
             for i in 0..COUNT {
                 loop {
-                    let p = TestItem { data: [(i % 256) as u8; 64], value: i };
+                    let p = TestItem {
+                        data: [(i % 256) as u8; 64],
+                        value: i,
+                    };
                     if QUEUE.push(p).is_ok() {
                         break;
                     }
@@ -280,7 +285,10 @@ mod test {
         thread::spawn(|| {
             for i in 0..COUNT {
                 loop {
-                    let p = TestItem { data: [(i % 256) as u8; 64], value: i };
+                    let p = TestItem {
+                        data: [(i % 256) as u8; 64],
+                        value: i,
+                    };
                     if QUEUE.push(p).is_ok() {
                         break;
                     }
