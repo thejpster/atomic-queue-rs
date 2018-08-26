@@ -2,7 +2,10 @@
 //!
 //! This is a simple lock-free atomic queue for `#![no_std]` embedded systems
 //! written in Rust. The queue can be any length because the storage is
-//! supplied as a mutable slice at creation time.
+//! supplied as a mutable slice at creation time. It can handle multiple
+//! concurrent readers and writers, although because it uses a spin loop
+//! you'll need an pre-emptible RTOS - producing from two interrupt routines
+//! is going to lead to deadlocks.
 //!
 //! ```rust
 //! extern crate atomic_queue;
@@ -77,6 +80,9 @@ where
     T: Copy,
 {
     /// Create a new queue.
+    ///
+    /// buffer is a mutable slice which this queue will use as storage. It
+    /// needs to live at least as long as the queue does.
     const_ft! {
         pub fn new(buffer: &'a mut[T]) -> AtomicQueue<'a, T> {
             AtomicQueue {
@@ -88,17 +94,22 @@ where
         }
     }
 
+    /// Return the length of the queue. Note, we do not 'reserve' any
+    /// elements, so you can actually put `N` items in a queue of length `N`.
     pub fn length(&self) -> usize {
         unsafe { (*self.data.get()).len() }
     }
 
     /// Add an item to the queue. An error is returned if the queue is full.
+    /// You can call this from an ISR but don't call it from two different ISR
+    /// concurrently. You can call it from two different threads just fine
+    /// though, as long as they're pre-emptible
     pub fn push(&self, value: T) -> Result<(), ()> {
         // Loop until we've allocated ourselves some space without colliding
         // with another writer.
-        let idx = loop {
+        let write_counter = loop {
             let write_counter = self.write.load(Ordering::Relaxed);
-            let read_counter = self.read.load(Ordering::Acquire);
+            let read_counter = self.read.load(Ordering::Relaxed);
             if (write_counter.wrapping_sub(read_counter)) >= self.length() {
                 // Queue is full - quit now
                 return Err(());
@@ -108,56 +119,67 @@ where
                 .compare_exchange_weak(
                     write_counter,
                     write_counter.wrapping_add(1),
-                    Ordering::Release,
+                    Ordering::Acquire,
                     Ordering::Relaxed,
                 )
                 .is_ok()
             {
                 // We've managed increment `self.write` successfully without
-                // anyone else updating it underneath us.
-                break self.counter_to_idx(write_counter);
+                // anyone else updating it underneath us. Someone could have
+                // incremented read counter, but that gives us *more* space,
+                // not less, so that's fine.
+                break write_counter;
             }
         };
+
         // This is safe because we're the only possible thread with this value
         // of idx (reading or writing).
         let p = unsafe { &mut *self.data.get() };
-        p[idx] = value;
+        p[self.counter_to_idx(write_counter)] = value;
 
         // Now update `self.available` so that readers can read what we just wrote.
-        self.available.fetch_add(1, Ordering::Release);
+        loop {
+            if self
+                .available
+                .compare_exchange_weak(
+                    write_counter,
+                    write_counter.wrapping_add(1),
+                    Ordering::Release,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                // We've managed increment `self.available` successfully without
+                // anyone else updating it underneath us.
+                return Ok(());
+            } else {
+                // `self.available` isn't as high as it should be. This means
+                // there's another writer currently writing to a lower slot
+                // than ours, and we need to try again.
+            }
+        }
 
-        Ok(())
     }
 
-    /// Take the next item off the queue.
+    /// Take the next item off the queue. `None` is returned if the queue is
+    /// empty. You can call this from multiple ISRs or threads concurrently
+    /// and it should be fine.
     pub fn pop(&self) -> Option<T> {
         // Loop until we've read an item without colliding with another
         // reader.
         loop {
+            let available_counter = self.available.load(Ordering::Relaxed);
             let read_counter = self.read.load(Ordering::Acquire);
-            let available_counter = self.available.load(Ordering::Acquire);
             if available_counter == read_counter {
                 // Queue is empty - quit now
                 return None;
             }
 
-            let write_counter = self.write.load(Ordering::Relaxed);
-            if write_counter != available_counter {
-                // Queue is currently being written to - try again
-                continue;
-            }
-
-            // This is safe because if someone is writing to this exact
-            // location, we'll detect that next and retry.
+            // This is safe because no-one else can be writing to this
+            // location, and concurrent reads get resolved in the next block.
             let p = unsafe { &*self.data.get() };
             // Cache the result
             let result = p[self.counter_to_idx(read_counter)];
-
-            let write_counter = self.write.load(Ordering::Relaxed);
-            if write_counter != available_counter {
-                // Queue is currently being written to - try again
-                continue;
-            }
 
             if self
                 .read
@@ -177,6 +199,8 @@ where
         }
     }
 
+    /// Counters are converted to slice indexes by taking them modulo the
+    /// slice length.
     fn counter_to_idx(&self, counter: usize) -> usize {
         counter % self.length()
     }
