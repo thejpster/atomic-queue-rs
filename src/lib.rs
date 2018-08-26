@@ -141,6 +141,12 @@ where
                 return None;
             }
 
+            let write_counter = self.write.load(Ordering::Relaxed);
+            if write_counter != available_counter {
+                // Queue is currently being written to - try again
+                continue;
+            }
+
             // This is safe because if someone is writing to this exact
             // location, we'll detect that next and retry.
             let p = unsafe { &*self.data.get() };
@@ -216,31 +222,32 @@ mod test {
     }
 
     /// A test - start two consumers and two producers.
-    /// Producer A produces 1..100.map(|x| x*2).
-    /// Producer B produces 1..100.map(|x| x*3).
-    /// Consumer A and B pop from the queue and sums the values.
-    /// Sum the result of A and B and it should be 1..100.map(|x| x*5)
-    ///
-    /// This currently fails - I think because it's possible to have one
-    /// producer interrupt another and for the first item being added to be
-    /// marked as 'available' when it in fact isn't. It's fine with a single
-    /// producer.
     #[test]
     fn threaded_test() {
         use std::thread;
+
+        #[derive(Copy, Clone)]
+        struct TestItem {
+            data: [u8; 64],
+            value: u64
+        }
+
         const COUNT: u64 = 10_000_000;
-        static mut STORAGE: [u64; 256] = [0u64; 256];
+        static mut STORAGE: [TestItem; 256] = [TestItem { data: [0u8; 64], value: 0 }; 256];
         lazy_static! {
-            static ref QUEUE: AtomicQueue<'static, u64> = {
+            static ref QUEUE: AtomicQueue<'static, TestItem> = {
                 let m = unsafe { AtomicQueue::new(&mut STORAGE) };
                 m
             };
         }
 
+        // We put the index mod 256 into the data buffer 64 times,
+        // then we put the index into the value field.
         thread::spawn(|| {
             for i in 0..COUNT {
                 loop {
-                    if QUEUE.push(i * 3).is_ok() {
+                    let p = TestItem { data: [(i % 256) as u8; 64], value: i };
+                    if QUEUE.push(p).is_ok() {
                         break;
                     }
                 }
@@ -249,7 +256,8 @@ mod test {
         thread::spawn(|| {
             for i in 0..COUNT {
                 loop {
-                    if QUEUE.push(i * 2).is_ok() {
+                    let p = TestItem { data: [(i % 256) as u8; 64], value: i };
+                    if QUEUE.push(p).is_ok() {
                         break;
                     }
                 }
@@ -261,7 +269,8 @@ mod test {
             for _ in 0..COUNT {
                 loop {
                     if let Some(n) = QUEUE.pop() {
-                        total = total + n;
+                        assert!(n.data.iter().all(|x| *x == (n.value % 256) as u8));
+                        total = total + n.value;
                         break;
                     }
                 }
@@ -274,7 +283,8 @@ mod test {
             for _ in 0..COUNT {
                 loop {
                     if let Some(n) = QUEUE.pop() {
-                        total = total + n;
+                        assert!(n.data.iter().all(|x| *x == (n.value % 256) as u8));
+                        total = total + n.value;
                         break;
                     }
                 }
@@ -287,10 +297,10 @@ mod test {
 
         let mut check = 0;
         for i in 0..COUNT {
-            check += i * 5;
+            check += i;
         }
 
-        assert_eq!(total1 + total2, check);
+        assert_eq!(total1 + total2, check * 2);
     }
 
 }
