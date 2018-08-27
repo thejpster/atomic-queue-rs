@@ -11,6 +11,7 @@ use atomic_queue::AtomicQueue;
 
 /// This is the static storage we use to back our queue
 static mut STORAGE: [u8; 16] = [0; 16];
+/// This is our queue. We need `lazy_static` because we can't refer to the storage above at compile time.
 lazy_static! {
     static ref QUEUE: AtomicQueue<'static, u8> = {
         let m = unsafe { AtomicQueue::new(&mut STORAGE) };
