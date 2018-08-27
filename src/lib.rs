@@ -108,8 +108,8 @@ where
         // Loop until we've allocated ourselves some space without colliding
         // with another writer.
         let write = loop {
-            let read = self.read.load(Ordering::SeqCst);
-            let write = self.write.load(Ordering::SeqCst);
+            let read = self.read.load(Ordering::Relaxed);
+            let write = self.write.load(Ordering::Relaxed);
             if (write.wrapping_sub(read)) >= self.length() {
                 // Queue is full - quit now
                 return Err(());
@@ -119,8 +119,8 @@ where
                 .compare_exchange(
                     write,
                     write.wrapping_add(1),
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
+                    Ordering::Acquire,
+                    Ordering::Relaxed,
                 )
                 .is_ok()
             {
@@ -144,8 +144,8 @@ where
                 .compare_exchange(
                     write,
                     write.wrapping_add(1),
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
+                    Ordering::Release,
+                    Ordering::Relaxed,
                 )
                 .is_ok()
             {
@@ -167,8 +167,8 @@ where
         // Loop until we've read an item without colliding with another
         // reader.
         loop {
-            let read = self.read.load(Ordering::SeqCst);
-            let available = self.available.load(Ordering::SeqCst);
+            let available = self.available.load(Ordering::Relaxed);
+            let read = self.read.load(Ordering::Acquire);
             if read >= available {
                 // Queue is empty - quit now
                 return None;
@@ -185,8 +185,8 @@ where
                 .compare_exchange(
                     read,
                     read.wrapping_add(1),
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
+                    Ordering::Release,
+                    Ordering::Relaxed,
                 )
                 .is_ok()
             {
