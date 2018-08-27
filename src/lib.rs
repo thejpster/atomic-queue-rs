@@ -107,20 +107,20 @@ where
     pub fn push(&self, value: T) -> Result<(), ()> {
         // Loop until we've allocated ourselves some space without colliding
         // with another writer.
-        let write_counter = loop {
-            let write_counter = self.write.load(Ordering::Relaxed);
-            let read_counter = self.read.load(Ordering::Relaxed);
-            if (write_counter.wrapping_sub(read_counter)) >= self.length() {
+        let write = loop {
+            let read = self.read.load(Ordering::SeqCst);
+            let write = self.write.load(Ordering::SeqCst);
+            if (write.wrapping_sub(read)) >= self.length() {
                 // Queue is full - quit now
                 return Err(());
             }
             if self
                 .write
-                .compare_exchange_weak(
-                    write_counter,
-                    write_counter.wrapping_add(1),
-                    Ordering::Acquire,
-                    Ordering::Relaxed,
+                .compare_exchange(
+                    write,
+                    write.wrapping_add(1),
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
                 )
                 .is_ok()
             {
@@ -128,24 +128,24 @@ where
                 // anyone else updating it underneath us. Someone could have
                 // incremented read counter, but that gives us *more* space,
                 // not less, so that's fine.
-                break write_counter;
+                break write;
             }
         };
 
         // This is safe because we're the only possible thread with this value
         // of idx (reading or writing).
         let p = unsafe { &mut *self.data.get() };
-        p[self.counter_to_idx(write_counter)] = value;
+        p[self.counter_to_idx(write)] = value;
 
         // Now update `self.available` so that readers can read what we just wrote.
         loop {
             if self
                 .available
-                .compare_exchange_weak(
-                    write_counter,
-                    write_counter.wrapping_add(1),
-                    Ordering::Release,
-                    Ordering::Relaxed,
+                .compare_exchange(
+                    write,
+                    write.wrapping_add(1),
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
                 )
                 .is_ok()
             {
@@ -155,7 +155,7 @@ where
             } else {
                 // `self.available` isn't as high as it should be. This means
                 // there's another writer currently writing to a lower slot
-                // than ours, and we need to try again.
+                // than ours, and we need to try again until they've finished.
             }
         }
     }
@@ -167,9 +167,9 @@ where
         // Loop until we've read an item without colliding with another
         // reader.
         loop {
-            let available_counter = self.available.load(Ordering::Relaxed);
-            let read_counter = self.read.load(Ordering::Acquire);
-            if available_counter == read_counter {
+            let read = self.read.load(Ordering::SeqCst);
+            let available = self.available.load(Ordering::SeqCst);
+            if read >= available {
                 // Queue is empty - quit now
                 return None;
             }
@@ -178,15 +178,15 @@ where
             // location, and concurrent reads get resolved in the next block.
             let p = unsafe { &*self.data.get() };
             // Cache the result
-            let result = p[self.counter_to_idx(read_counter)];
+            let result = p[self.counter_to_idx(read)];
 
             if self
                 .read
-                .compare_exchange_weak(
-                    read_counter,
-                    read_counter.wrapping_add(1),
-                    Ordering::Release,
-                    Ordering::Relaxed,
+                .compare_exchange(
+                    read,
+                    read.wrapping_add(1),
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
                 )
                 .is_ok()
             {
@@ -211,7 +211,7 @@ mod test {
 
     #[test]
     fn create_queue() {
-        let mut buffer = [0u32; 4];
+        let mut buffer = vec![0, 0, 0, 0];
         let q = AtomicQueue::new(&mut buffer);
         assert!(q.push(1).is_ok());
         assert!(q.push(2).is_ok());
@@ -227,7 +227,7 @@ mod test {
 
     #[test]
     fn overflow_queue() {
-        let mut buffer = [0u32; 4];
+        let mut buffer = vec![0, 0, 0, 0];
         let q = AtomicQueue::new(&mut buffer);
         assert!(q.push(1).is_ok());
         assert!(q.push(2).is_ok());
@@ -249,15 +249,17 @@ mod test {
     fn threaded_test() {
         use std::thread;
 
+        const TEST_ITEM_DATA_LEN: usize = 64 - 8;
+
         #[derive(Copy, Clone)]
         struct TestItem {
-            data: [u8; 64],
+            data: [u8; TEST_ITEM_DATA_LEN],
             value: u64,
         }
 
-        const COUNT: u64 = 10_000_000;
+        const COUNT: u64 = 100_000_000;
         static mut STORAGE: [TestItem; 256] = [TestItem {
-            data: [0u8; 64],
+            data: [0u8; TEST_ITEM_DATA_LEN],
             value: 0,
         }; 256];
         lazy_static! {
@@ -266,35 +268,6 @@ mod test {
                 m
             };
         }
-
-        // We put the index mod 256 into the data buffer 64 times,
-        // then we put the index into the value field.
-        thread::spawn(|| {
-            for i in 0..COUNT {
-                loop {
-                    let p = TestItem {
-                        data: [(i % 256) as u8; 64],
-                        value: i,
-                    };
-                    if QUEUE.push(p).is_ok() {
-                        break;
-                    }
-                }
-            }
-        });
-        thread::spawn(|| {
-            for i in 0..COUNT {
-                loop {
-                    let p = TestItem {
-                        data: [(i % 256) as u8; 64],
-                        value: i,
-                    };
-                    if QUEUE.push(p).is_ok() {
-                        break;
-                    }
-                }
-            }
-        });
 
         let c1 = thread::spawn(|| {
             let mut total = 0;
@@ -322,6 +295,30 @@ mod test {
                 }
             }
             total
+        });
+
+        thread::spawn(|| {
+            for i in 0..COUNT {
+                let p = TestItem {
+                    data: [(i % 256) as u8; TEST_ITEM_DATA_LEN],
+                    value: i,
+                };
+                while QUEUE.push(p).is_err() {
+                    // spin
+                }
+            }
+        });
+
+        thread::spawn(|| {
+            for i in 0..COUNT {
+                let p = TestItem {
+                    data: [(i % 256) as u8; TEST_ITEM_DATA_LEN],
+                    value: i,
+                };
+                while QUEUE.push(p).is_err() {
+                    // spin
+                }
+            }
         });
 
         let total1 = c1.join().unwrap();
