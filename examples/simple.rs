@@ -11,15 +11,15 @@ static mut STORAGE: [u8; 16] = [0; 16];
 /// initialise this / because Rust won't let us have a `static` containing a
 /// mutable reference to another `static`.
 lazy_static! {
-    static ref QUEUE: AtomicQueue<'static, u8> = {
-        let m = unsafe { AtomicQueue::new(&mut STORAGE) };
-        m
-    };
+	static ref QUEUE: AtomicQueue<'static, u8> = {
+		let m = unsafe { AtomicQueue::new(&mut STORAGE) };
+		m
+	};
 }
 
 fn main() -> Result<(), ()> {
-    println!("Pushed 255");
-    QUEUE.push(255)?;
-    println!("Popped {:?}", QUEUE.pop());
-    Ok(())
+	println!("Pushed 255");
+	QUEUE.push(255)?;
+	println!("Popped {:?}", QUEUE.pop());
+	Ok(())
 }
