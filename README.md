@@ -1,28 +1,20 @@
 # Atomic Queue
 
-This is a simple lock-free atomic queue for `#![no_std]` embedded systems written in Rust. The queue can be any length because the storage is supplied as a mutable slice at creation time.
+This is a simple lock-free atomic queue for `#![no_std]` embedded systems written in Rust.
+
+It will compile on any target with Atomic Compare-and-Swap (e.g. `thumbv7m-none-eabi` is OK, but 
+`thumbv6-none-eabi` is not).
 
 ```rust
-extern crate atomic_queue;
-#[macro_use]
-extern crate lazy_static;
-
 use atomic_queue::AtomicQueue;
 
 /// This is the static storage we use to back our queue
-static mut STORAGE: [u8; 16] = [0; 16];
-/// This is our queue. We need `lazy_static` because we can't refer to the storage above at compile time.
-lazy_static! {
-    static ref QUEUE: AtomicQueue<'static, u8> = {
-        let m = unsafe { AtomicQueue::new(&mut STORAGE) };
-        m
-    };
-}
+static QUEUE: AtomicQueue<u8, 16> = AtomicQueue::new([0u8; 16]);
 
 fn main() -> Result<(), ()> {
-    println!("Pushed 255");
-    QUEUE.push(255)?;
-    println!("Popped {:?}", QUEUE.pop());
-    Ok(())
+	println!("Pushed 255");
+	QUEUE.push(255)?;
+	println!("Popped {:?}", QUEUE.pop());
+	Ok(())
 }
 ```

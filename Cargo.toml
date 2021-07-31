@@ -7,12 +7,4 @@ keywords = ["arm", "cortex-m", "atomic", "queue", "ringbuffer"]
 categories = ["embedded", "no-std"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/thejpster/atomic-queue-rs"
-
-[dependencies]
-const-ft = { version =  "0.1" }
-
-[features]
-const = ["const-ft/const_fn"]
-
-[dev-dependencies]
-lazy_static = "1.1.0"
+edition = "2018"

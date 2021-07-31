@@ -8,20 +8,10 @@
 //! is going to lead to deadlocks.
 //!
 //! ```rust
-//! extern crate atomic_queue;
-//! #[macro_use]
-//! extern crate lazy_static;
-//!
 //! use atomic_queue::AtomicQueue;
 //!
 //! /// This is the static storage we use to back our queue
-//! static mut STORAGE: [u8; 16] = [0; 16];
-//! lazy_static! {
-//!     static ref QUEUE: AtomicQueue<'static, u8> = {
-//!         let m = unsafe { AtomicQueue::new(&mut STORAGE) };
-//!         m
-//!     };
-//! }
+//! static QUEUE: AtomicQueue<u8, 16> = AtomicQueue::new([0u8; 16]);
 //!
 //! fn main() -> Result<(), ()> {
 //!     println!("Pushed 255");
@@ -33,28 +23,15 @@
 
 #![cfg_attr(not(test), no_std)]
 
-#[macro_use]
-extern crate const_ft;
-
-#[cfg(test)]
-#[macro_use]
-extern crate lazy_static;
-
-#[cfg(test)]
-use std as core;
-
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicUsize, Ordering, ATOMIC_USIZE_INIT};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// A queue of fixed length based around a mutable slice provided to the
 /// constructor. Holds a number of some type `T`. Safe for multiple consumers
 /// and producers.
-pub struct AtomicQueue<'a, T>
-where
-	T: 'a + Copy,
-{
+pub struct AtomicQueue<T, const N: usize> {
 	/// This is where we store our data
-	data: UnsafeCell<&'a mut [T]>,
+	data: UnsafeCell<[T; N]>,
 	/// This is the counter for the first item in the queue (i.e. the one to
 	/// be pop'd next). Counters increment forever. You convert it to an
 	/// array index by taking them modulo data.len() (see `counter_to_idx`).
@@ -73,31 +50,28 @@ where
 
 /// Our use of CAS atomics means we can share `AtomicQueue` between threads
 /// safely.
-unsafe impl<'a, T> Sync for AtomicQueue<'a, T> where T: Send + Copy {}
+unsafe impl<T, const N: usize> Sync for AtomicQueue<T, N> where T: Send {}
 
-impl<'a, T> AtomicQueue<'a, T>
+impl<T, const N: usize> AtomicQueue<T, N> {
+	pub const fn new(init_data: [T; N]) -> AtomicQueue<T, N> {
+		AtomicQueue {
+			data: UnsafeCell::new(init_data),
+			read: AtomicUsize::new(0),
+			write: AtomicUsize::new(0),
+			available: AtomicUsize::new(0),
+		}
+	}
+}
+
+impl<T, const N: usize> AtomicQueue<T, N>
 where
 	T: Copy,
 {
-	/// Create a new queue.
-	///
-	/// buffer is a mutable slice which this queue will use as storage. It
-	/// needs to live at least as long as the queue does.
-	const_ft! {
-		pub fn new(buffer: &'a mut[T]) -> AtomicQueue<'a, T> {
-			AtomicQueue {
-				data: UnsafeCell::new(buffer),
-				read: ATOMIC_USIZE_INIT,
-				write: ATOMIC_USIZE_INIT,
-				available: ATOMIC_USIZE_INIT,
-			}
-		}
-	}
-
 	/// Return the length of the queue. Note, we do not 'reserve' any
 	/// elements, so you can actually put `N` items in a queue of length `N`.
 	pub fn length(&self) -> usize {
-		unsafe { (*self.data.get()).len() }
+		let len = N;
+		len
 	}
 
 	/// Add an item to the queue. An error is returned if the queue is full.
@@ -211,8 +185,7 @@ mod test {
 
 	#[test]
 	fn create_queue() {
-		let mut buffer = vec![0, 0, 0, 0];
-		let q = AtomicQueue::new(&mut buffer);
+		let q = AtomicQueue::new([0u8; 4]);
 		assert!(q.push(1).is_ok());
 		assert!(q.push(2).is_ok());
 		assert!(q.push(3).is_ok());
@@ -227,8 +200,7 @@ mod test {
 
 	#[test]
 	fn overflow_queue() {
-		let mut buffer = vec![0, 0, 0, 0];
-		let q = AtomicQueue::new(&mut buffer);
+		let q = AtomicQueue::new([0u8; 4]);
 		assert!(q.push(1).is_ok());
 		assert!(q.push(2).is_ok());
 		assert!(q.push(3).is_ok());
@@ -257,17 +229,13 @@ mod test {
 			value: u64,
 		}
 
-		const COUNT: u64 = 100_000_000;
-		static mut STORAGE: [TestItem; 256] = [TestItem {
-			data: [0u8; TEST_ITEM_DATA_LEN],
-			value: 0,
-		}; 256];
-		lazy_static! {
-			static ref QUEUE: AtomicQueue<'static, TestItem> = {
-				let m = unsafe { AtomicQueue::new(&mut STORAGE) };
-				m
-			};
-		}
+		const COUNT: u64 = 10_000_000;
+		static QUEUE: AtomicQueue<TestItem, 256> = AtomicQueue::new(
+			[TestItem {
+				data: [0; TEST_ITEM_DATA_LEN],
+				value: 0,
+			}; 256],
+		);
 
 		let c1 = thread::spawn(|| {
 			let mut total = 0;
